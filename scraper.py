@@ -3,13 +3,65 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 logger = logging.getLogger(__name__)
+
+
+def extract_tldr_metadata(text: str) -> Dict[str, Optional[str]]:
+    """Extract Fee, Vacancies, and Last Date from notification body text."""
+    if not text or not text.strip():
+        return {"fee": None, "vacancies": None, "last_date": None}
+
+    normalized = re.sub(r"\s+", " ", text.strip())
+
+    fee: Optional[str] = None
+    fee_patterns = [
+        r"(?:application\s+)?fee[:\s]*(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{2})?)",
+        r"(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{2})?)(?:\s*(?:\(?(?:application|exam)\s+fee\)?))?",
+        r"fee[:\s]*([\d,]+)\s*(?:\/-)?"
+    ]
+    for pattern in fee_patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if match:
+            fee = f"₹{match.group(1).replace(',', '')}"
+            break
+
+    vacancies: Optional[str] = None
+    vacancy_patterns = [
+        r"(\d[\d,]*)\s*(?:posts?|vacancies|vacancy|positions?)",
+        r"(?:total|number\s+of)\s*(?:posts?|vacancies)[:\s]*(\d[\d,]*)",
+    ]
+    for pattern in vacancy_patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if match:
+            vacancies = match.group(1).replace(",", "")
+            break
+
+    last_date: Optional[str] = None
+    last_date_patterns = [
+        r"(?:deadline|apply\s+by|last\s+date(?:\s+to\s+apply)?|closing\s+date)[:\s]*"
+        r"(\d{1,2}[-./]\d{1,2}[-./]\d{2,4})",
+        r"(?:deadline|apply\s+by|last\s+date(?:\s+to\s+apply)?|closing\s+date)[:\s]*"
+        r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+        r"Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
+        r"(?:deadline|apply\s+by|last\s+date)[:\s]*(\d{4}-\d{2}-\d{2})",
+    ]
+    for pattern in last_date_patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if match:
+            last_date = match.group(1).strip()
+            break
+
+    return {"fee": fee, "vacancies": vacancies, "last_date": last_date}
+
 
 # ---------------------------------------------------------------------------
 # Stealth browser configuration constants
@@ -49,6 +101,33 @@ STEALTH_LAUNCH_ARGS: List[str] = [
     "--window-size=1440,900",
 ]
 
+# ---------------------------------------------------------------------------
+# Navigation noise blacklist — skip links whose text matches these phrases
+# ---------------------------------------------------------------------------
+
+NAV_BLACKLIST_PHRASES = [
+    "home", "about us", "about", "contact us", "contact", "rti",
+    "tender", "tenders", "downloads", "sitemap", "helpdesk",
+    "skip to main content", "skip to content", "feedback", "terms",
+    "privacy policy", "disclaimer", "careers", "accessibility",
+    "screen reader", "site map", "login", "register", "sign in",
+    "sign up", "logout", "faq", "gallery", "media", "press",
+    "recruitment rules", "vision", "mission", "annual report",
+    "organization", "organisational", "minister", "ministry",
+    "secretary", "director", "committee", "board",
+    "advertisement", "vendor", "empanelment",
+]
+
+ANNOUNCEMENT_KEYWORDS = [
+    "notification", "notice", "result", "results", "recruitment", "exam",
+    "examination", "admit card", "call letter", "schedule", "syllabus",
+    "interview", "answer key", "cut off", "cutoff", "merit list",
+    "shortlist", "selection", "appointment", "vacancy", "vacancies",
+    "application", "registration", "apply", "date", "postpone",
+    "reschedule", "extension", "hall ticket", "score card", "marks",
+    "provisional", "final", "declaration", "announcement",
+]
+
 
 # ---------------------------------------------------------------------------
 # Site targets
@@ -79,54 +158,151 @@ class ScraperError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 async def _sleep_with_backoff(attempt: int, base_delay: float = 1.25, max_delay: float = 15.0) -> None:
-    """Exponential back-off with ±15 % jitter so retry bursts don't align."""
+    """Exponential back-off with ±15% jitter so retry bursts don't align."""
     delay = min(max_delay, base_delay * (2 ** attempt))
     jitter = delay * 0.15
     await asyncio.sleep(delay + jitter)
 
 
-async def _extract_page_text(page: Page) -> str:
-    """
-    Harvest the most content-rich text block from the page.
-    Tries common notification-area selectors first, then falls back
-    to <main>, <article>, and finally the full <body>.
-    """
-    notification_selectors = [
-        "div[class*='notification']",
-        "div[class*='alert']",
-        "div[class*='notice']",
-        "div[class*='update']",
-        "div[class*='news']",
-        "ul[class*='notice']",
-        "ul[class*='news']",
-        "section[class*='notice']",
-    ]
+def _is_nav_noise(text: str) -> bool:
+    """Return True if the link text is navigation boilerplate and should be excluded."""
+    if not text:
+        return True
+    text_lower = text.lower().strip()
+    # Exact match or contained as the entire token
+    for phrase in NAV_BLACKLIST_PHRASES:
+        if text_lower == phrase or text_lower.startswith(phrase + " ") or text_lower.endswith(" " + phrase):
+            return True
+        if f" {phrase} " in f" {text_lower} ":
+            return True
+    return False
 
-    for selector in notification_selectors:
-        try:
-            await page.wait_for_selector(selector, timeout=4000)
+
+def _has_announcement_keyword(text: str) -> bool:
+    """Return True if text contains at least one exam/recruitment keyword."""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in ANNOUNCEMENT_KEYWORDS)
+
+
+def _clean_text(text: str) -> str:
+    """Normalize whitespace and strip trailing/leading junk from link text."""
+    # Replace tabs, newlines, multiple spaces with single space
+    cleaned = re.sub(r"[\t\n\r]+", " ", text)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+async def _extract_announcement_links(page: Page, base_url: str) -> List[Dict[str, str]]:
+    """
+    Extract genuine announcement links from the page by iterating <a> tags.
+
+    Strategy:
+    1. Target common announcement containers first (notice boards, update sections).
+    2. Fall back to scanning all <a> tags on the page.
+    3. Apply blacklist filtering and keyword matching.
+    4. Resolve relative hrefs to absolute URLs using urljoin.
+    5. Return list of {text, url} dicts capped at 20 items.
+    """
+    raw_links: List[Dict[str, str]] = await page.evaluate(
+        """
+        (baseUrl) => {
+            const results = [];
+
+            // Priority 1: Look inside known announcement/notice containers
+            const containerSelectors = [
+                "div[class*='notice']", "div[class*='Notice']",
+                "div[class*='notification']", "div[class*='update']",
+                "div[class*='news']", "div[class*='whats-new']",
+                "div[class*='whatsnew']", "div[class*='latest']",
+                "ul[class*='notice']", "ul[class*='news']",
+                "ul[class*='update']", "ul[class*='latest']",
+                "section[class*='notice']", "section[class*='news']",
+                "table[class*='notice']", "table[class*='update']",
+                ".marquee", ".ticker", "#whatsnew", "#latest-news",
+                "#notification", "#notice-board",
+            ];
+
+            const seenHrefs = new Set();
+
+            for (const sel of containerSelectors) {
+                const containers = document.querySelectorAll(sel);
+                for (const container of containers) {
+                    const anchors = container.querySelectorAll('a[href]');
+                    for (const a of anchors) {
+                        const text = a.innerText.replace(/\\s+/g, ' ').trim();
+                        const href = a.href || '';
+                        if (text && href && !seenHrefs.has(href)) {
+                            seenHrefs.add(href);
+                            results.push({ text, href });
+                        }
+                    }
+                }
+            }
+
+            // Priority 2: Fallback — scan all <a> tags if containers gave nothing useful
+            if (results.length < 3) {
+                const allAnchors = document.querySelectorAll('a[href]');
+                for (const a of allAnchors) {
+                    const text = a.innerText.replace(/\\s+/g, ' ').trim();
+                    const href = a.href || '';
+                    if (text && href && !seenHrefs.has(href)) {
+                        seenHrefs.add(href);
+                        results.push({ text, href });
+                    }
+                }
+            }
+
+            return results.slice(0, 200);
+        }
+        """,
+        base_url,
+    )
+
+    announcements: List[Dict[str, str]] = []
+
+    for link in raw_links:
+        raw_text = _clean_text(link.get("text", ""))
+        raw_href = link.get("href", "").strip()
+
+        # Length guard — must be a real headline (>20 chars)
+        if len(raw_text) < 20:
+            continue
+
+        # Too long is likely a paragraph, not a title
+        if len(raw_text) > 350:
+            continue
+
+        # Skip navigation boilerplate
+        if _is_nav_noise(raw_text):
+            continue
+
+        # Must contain at least one relevant keyword
+        if not _has_announcement_keyword(raw_text):
+            # Also accept if the URL path looks like a notice/document
+            if not any(kw in raw_href.lower() for kw in ["notice", "result", "notification", "admit", "recruitment", "exam", "schedule", "syllabus", "pdf"]):
+                continue
+
+        # Skip empty or javascript: hrefs
+        if not raw_href or raw_href.startswith("javascript:") or raw_href == "#":
+            continue
+
+        # Build absolute URL
+        absolute_url = urljoin(base_url, raw_href)
+
+        # Sanity check — must be http/https
+        parsed = urlparse(absolute_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+
+        announcements.append({
+            "text": raw_text,
+            "url": absolute_url,
+        })
+
+        if len(announcements) >= 20:
             break
-        except Exception:
-            continue
 
-    candidates = ["body", "main", "article"]
-    texts: List[str] = []
-    for selector in candidates:
-        try:
-            text = await page.locator(selector).inner_text(timeout=4000)
-            if text and len(text.strip()) > 200:
-                texts.append(text.strip())
-        except Exception:
-            continue
-
-    if texts:
-        return "\n\n".join(texts)
-
-    # Last resort: raw JS evaluation
-    try:
-        return await page.evaluate("() => document.body ? document.body.innerText : ''")
-    except Exception as exc:
-        raise ScraperError(f"Unable to read page text: {exc}") from exc
+    return announcements
 
 
 async def _create_stealth_context(browser: Browser) -> BrowserContext:
@@ -161,63 +337,19 @@ async def _create_stealth_context(browser: Browser) -> BrowserContext:
 
 
 # ---------------------------------------------------------------------------
-# Per-site scraper (isolated try/except so one failure never blocks others)
+# Per-site scraper
 # ---------------------------------------------------------------------------
-
-async def scrape_generic_site(page: Page, url: str) -> str:
-    """
-    Generic scraper fallback.
-    Extracts the newest bulletins or links using a generalized heuristic,
-    specifically locating <a> tags containing key words or dates.
-    """
-    bulletins = await page.evaluate(
-        """
-        () => {
-            const keywords = ["notice", "result", "apply", "notification", "schedule", "admit", "date", "recruitment", "exam", "announcement"];
-            const links = Array.from(document.querySelectorAll('a'));
-            const matches = [];
-            
-            for (const link of links) {
-                const text = link.innerText.trim();
-                if (text.length > 5) {
-                    const textLower = text.toLowerCase();
-                    const hasKeyword = keywords.some(kw => textLower.includes(kw));
-                    const hasYear = /202[4-9]/.test(textLower);
-                    if (hasKeyword || hasYear) {
-                        matches.push(`${text} (Link: ${link.href})`);
-                    }
-                }
-            }
-            if (matches.length === 0) {
-                const pTags = Array.from(document.querySelectorAll('p, li, td'));
-                for (const p of pTags) {
-                    const text = p.innerText.trim();
-                    if (text.length > 20 && text.length < 300) {
-                        const textLower = text.toLowerCase();
-                        if (keywords.some(kw => textLower.includes(kw))) {
-                            matches.push(text);
-                        }
-                    }
-                }
-            }
-            return matches.slice(0, 15).join('\\n\\n');
-        }
-        """
-    )
-    if bulletins:
-        return f"Bulletins extracted from custom URL:\n\n{bulletins}"
-    else:
-        return await page.evaluate("() => document.body ? document.body.innerText.slice(0, 3000) : ''")
-
 
 async def scrape_site(browser: Browser, site: SiteTarget, max_retries: int = 3) -> Dict[str, Any]:
     """
     Attempt to scrape a single government portal.
 
-    Each attempt uses a fresh stealth browser context.  Navigation uses
-    ``wait_until="domcontentloaded"`` (instead of the slower and bot-flagging
-    ``networkidle``) so parsing begins the moment the DOM text tree is ready.
+    Returns a dict with:
+      - site_name, source_url, title, fetched_at
+      - announcements: List[{text, url}] — individual deep-linked notices
+      - content: joined text of all announcements (for Gemini processing)
 
+    Each attempt uses a fresh stealth browser context.
     Raises ScraperError after all retries are exhausted.
     """
     last_error: Optional[Exception] = None
@@ -240,36 +372,35 @@ async def scrape_site(browser: Browser, site: SiteTarget, max_retries: int = 3) 
             await page.goto(site.url, wait_until="domcontentloaded", timeout=30_000)
 
             # Brief human-like pause before reading DOM
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(1200)
 
             title = await page.title()
-            
-            # Check if this URL is one of the default 6
-            is_custom = True
-            for default_site in GOVERNMENT_SITES:
-                if default_site.url.replace("www.", "") in site.url.replace("www.", "") or site.url.replace("www.", "") in default_site.url.replace("www.", ""):
-                    is_custom = False
-                    break
 
-            if is_custom:
-                logger.info("[INFO] Using Generic Scraper fallback for custom URL: %s", site.url)
-                text = await scrape_generic_site(page, site.url)
-            else:
-                text = await _extract_page_text(page)
+            # Extract structured announcement links with deep hrefs
+            announcements = await _extract_announcement_links(page, site.url)
 
-            if not text.strip():
-                raise ScraperError("Empty page body text after DOM load")
+            if not announcements:
+                raise ScraperError(f"No announcement links extracted from {site.url}")
 
             logger.info(
-                "[INFO] Successfully scraped %s (%d chars)",
-                site.name, len(text),
+                "[INFO] Successfully extracted %d announcement links from %s",
+                len(announcements), site.name,
             )
+
+            # Build a combined text blob for AI processing
+            # Each line: "TITLE: <title> | URL: <url>"
+            content_lines = [
+                f"ANNOUNCEMENT: {item['text']} | LINK: {item['url']}"
+                for item in announcements
+            ]
+            content = "\n".join(content_lines)
 
             return {
                 "site_name": site.name,
                 "source_url": site.url,
                 "title": title.strip(),
-                "content": text.strip(),
+                "content": content,
+                "announcements": announcements,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -289,7 +420,6 @@ async def scrape_site(browser: Browser, site: SiteTarget, max_retries: int = 3) 
                 await _sleep_with_backoff(attempt)
 
         finally:
-            # Always close page + context to free memory and avoid session leaks
             if page is not None:
                 try:
                     await page.close()
@@ -311,8 +441,7 @@ async def scrape_site(browser: Browser, site: SiteTarget, max_retries: int = 3) 
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator — each portal is wrapped in its own try/except so a single
-# firewall timeout never blocks the rest of the pipeline
+# Orchestrator
 # ---------------------------------------------------------------------------
 
 async def scrape_all_sites(sites: Optional[List[SiteTarget]] = None) -> List[Dict[str, Any]]:
@@ -324,7 +453,8 @@ async def scrape_all_sites(sites: Optional[List[SiteTarget]] = None) -> List[Dic
     loop immediately continues to the next site so all remaining portals load
     unhindered.
 
-    Returns a list of successfully scraped page dictionaries.
+    Returns a list of successfully scraped page dictionaries, each with an
+    'announcements' key holding deep-linked notice items.
     """
     selected_sites = sites or GOVERNMENT_SITES
     logger.info("[INFO] Starting stealth scraper for %d site(s)", len(selected_sites))
@@ -338,9 +468,6 @@ async def scrape_all_sites(sites: Optional[List[SiteTarget]] = None) -> List[Dic
             results: List[Dict[str, Any]] = []
 
             for site in selected_sites:
-                # ── Per-portal isolation boundary ──────────────────────────
-                # A timeout or connection error on one domain MUST NOT prevent
-                # the remaining portals from being scraped.
                 try:
                     result = await scrape_site(browser, site)
                     results.append(result)
@@ -356,7 +483,6 @@ async def scrape_all_sites(sites: Optional[List[SiteTarget]] = None) -> List[Dic
                         site.name, exc,
                     )
                     continue
-                # ── End per-portal boundary ────────────────────────────────
 
             logger.info(
                 "[INFO] Scraper completed: %d/%d sites successful",

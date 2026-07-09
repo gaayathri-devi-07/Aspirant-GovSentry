@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, validator
 
-from database import get_database
+from database import VALID_USER_STATUSES, get_database
 
 load_dotenv()
 
@@ -69,6 +69,19 @@ class WatchlistCreatePayload(BaseModel):
         return value
 
 
+class StatusUpdatePayload(BaseModel):
+    user_status: str
+
+    @validator("user_status")
+    def validate_status(cls, value: str) -> str:  # noqa: N805
+        value = value.strip()
+        if value not in VALID_USER_STATUSES:
+            raise ValueError(
+                f"user_status must be one of: {', '.join(sorted(VALID_USER_STATUSES))}"
+            )
+        return value
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -124,6 +137,9 @@ async def get_stats() -> Dict[str, Any]:
         stats_dict.get("active_monitors", stats_dict.get("activeMonitors", 0)) or 0
     )
     total_sites: int = int(stats_dict.get("total_sites", 0) or 0)
+    default_portals: int = int(
+        stats_dict.get("default_portals", stats_dict.get("defaultPortals", 6)) or 6
+    )
     telegram_sent: int = int(stats_dict.get("telegram_sent", 0) or 0)
     watchlist_count: int = int(stats_dict.get("watchlist_count", 0) or 0)
     last_sync: Optional[str] = stats_dict.get("last_sync") or stats_dict.get("lastSync")
@@ -137,6 +153,8 @@ async def get_stats() -> Dict[str, Any]:
         "active_monitors": active_monitors,
         "totalSites": total_sites,
         "total_sites": total_sites,
+        "defaultPortals": default_portals,
+        "default_portals": default_portals,
         "telegramSent": telegram_sent,
         "telegram_sent": telegram_sent,
         "watchlistCount": watchlist_count,
@@ -144,6 +162,25 @@ async def get_stats() -> Dict[str, Any]:
         "lastSync": last_sync,
         "last_sync": last_sync,
     }
+
+
+# ---------------------------------------------------------------------------
+# CRM Status endpoint
+# ---------------------------------------------------------------------------
+
+@app.put("/api/update-status/{alert_id}", status_code=status.HTTP_200_OK)
+async def update_alert_status(alert_id: int, payload: StatusUpdatePayload) -> Dict[str, Any]:
+    """Update the CRM user_status for a single notification by its integer id."""
+    try:
+        updated = database.update_user_status(alert_id, payload.user_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Alert with id={alert_id} was not found.",
+        )
+    return {"message": "Status updated.", "alert": updated}
 
 
 # ---------------------------------------------------------------------------

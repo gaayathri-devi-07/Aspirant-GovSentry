@@ -14,6 +14,13 @@ DEFAULT_DB_PATH = os.getenv("DATABASE_PATH", "govtexam_alerts.db")
 # Global connection for in-memory test database (keeps it alive)
 _MEMORY_DB_CONNECTION: sqlite3.Connection | None = None
 
+VALID_USER_STATUSES = {
+    "Not Applied",
+    "Applied — Awaiting Admit Card",
+    "Admit Card Out!",
+    "Exam Done",
+}
+
 
 @dataclass(slots=True)
 class NotificationRecord:
@@ -28,6 +35,10 @@ class NotificationRecord:
     content_hash: str
     created_at: str
     telegram_sent: int = 0
+    user_status: str = "Not Applied"
+    fee: str = ""
+    vacancies: str = ""
+    last_date: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -146,6 +157,14 @@ class Database:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_url ON watchlist(target_url)"
             )
 
+            self._ensure_column(connection, "notifications", "user_status", "TEXT NOT NULL DEFAULT 'Not Applied'")
+            self._ensure_column(connection, "notifications", "fee", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "notifications", "vacancies", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(connection, "notifications", "last_date", "TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_user_status ON notifications(user_status)"
+            )
+
             connection.commit()
 
             # --- Check record count and seed if fewer than 5 records (skip in-memory test databases) ---
@@ -159,6 +178,12 @@ class Database:
             # Don't close in-memory connections - they're shared
             if self.db_path != ':memory:':
                 connection.close()
+
+    @staticmethod
+    def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _seed_data(self, connection: sqlite3.Connection) -> None:
         import hashlib
@@ -368,12 +393,18 @@ class Database:
             )
             content_hash = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
+            from scraper import extract_tldr_metadata
+
+            combined_text = f"{item['summary']} {item['new_value']}"
+            metadata = extract_tldr_metadata(combined_text)
+
             connection.execute(
                 """
                 INSERT OR IGNORE INTO notifications (
                     exam_name, update_type, old_value, new_value, summary,
-                    source_url, site_name, raw_text, content_hash, created_at, telegram_sent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_url, site_name, raw_text, content_hash, created_at,
+                    telegram_sent, user_status, fee, vacancies, last_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["exam_name"],
@@ -387,12 +418,17 @@ class Database:
                     content_hash,
                     created_at,
                     1,
+                    "Not Applied",
+                    metadata.get("fee") or "",
+                    metadata.get("vacancies") or "",
+                    metadata.get("last_date") or "",
                 ),
             )
         connection.commit()
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> NotificationRecord:
+        keys = row.keys()
         return NotificationRecord(
             exam_name=row["exam_name"],
             update_type=row["update_type"],
@@ -405,6 +441,10 @@ class Database:
             content_hash=row["content_hash"],
             created_at=row["created_at"],
             telegram_sent=row["telegram_sent"],
+            user_status=row["user_status"] if "user_status" in keys else "Not Applied",
+            fee=row["fee"] if "fee" in keys else "",
+            vacancies=row["vacancies"] if "vacancies" in keys else "",
+            last_date=row["last_date"] if "last_date" in keys else "",
         )
 
     @staticmethod
@@ -423,6 +463,10 @@ class Database:
         standardized_category = classify_headline_category(
             payload["exam_name"], payload.get("summary", ""), raw_update_type
         )
+        user_status = payload.get("user_status", "Not Applied").strip()
+        if user_status not in VALID_USER_STATUSES:
+            user_status = "Not Applied"
+
         data = {
             "exam_name": payload["exam_name"].strip(),
             "update_type": standardized_category,
@@ -435,6 +479,10 @@ class Database:
             "content_hash": payload["content_hash"].strip(),
             "created_at": created_at,
             "telegram_sent": int(bool(payload.get("telegram_sent", False))),
+            "user_status": user_status,
+            "fee": payload.get("fee", "").strip(),
+            "vacancies": payload.get("vacancies", "").strip(),
+            "last_date": payload.get("last_date", "").strip(),
         }
 
         with self._connect() as connection:
@@ -442,8 +490,9 @@ class Database:
                 """
                 INSERT OR IGNORE INTO notifications (
                     exam_name, update_type, old_value, new_value, summary,
-                    source_url, site_name, raw_text, content_hash, created_at, telegram_sent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_url, site_name, raw_text, content_hash, created_at,
+                    telegram_sent, user_status, fee, vacancies, last_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["exam_name"],
@@ -457,6 +506,10 @@ class Database:
                     data["content_hash"],
                     data["created_at"],
                     data["telegram_sent"],
+                    data["user_status"],
+                    data["fee"],
+                    data["vacancies"],
+                    data["last_date"],
                 ),
             )
             connection.commit()
@@ -475,7 +528,8 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT id, exam_name, update_type, old_value, new_value, summary,
-                       source_url, site_name, raw_text, content_hash, created_at, telegram_sent
+                       source_url, site_name, raw_text, content_hash, created_at,
+                       telegram_sent, user_status, fee, vacancies, last_date
                 FROM notifications
                 ORDER BY datetime(created_at) DESC, id DESC
                 LIMIT ?
@@ -492,9 +546,11 @@ class Database:
         return result
 
     def stats(self) -> Dict[str, Any]:
+        from scraper import GOVERNMENT_SITES
+
         with self._connect() as connection:
             total_alerts = connection.execute("SELECT COUNT(*) AS total FROM notifications").fetchone()["total"]
-            total_sites = connection.execute(
+            distinct_sites_in_db = connection.execute(
                 "SELECT COUNT(DISTINCT site_name) AS total FROM notifications"
             ).fetchone()["total"]
             last_sync = connection.execute(
@@ -506,23 +562,59 @@ class Database:
             watchlist_count = connection.execute(
                 "SELECT COUNT(*) AS total FROM watchlist"
             ).fetchone()["total"]
-        # active_monitors = distinct portals from notifications + custom watchlist entries
-        active_monitors = total_sites + watchlist_count
+
+        default_portal_count = len(GOVERNMENT_SITES)
+        total_sites = max(distinct_sites_in_db, default_portal_count)
+        active_monitors = default_portal_count + watchlist_count
+
         return {
             "total_alerts": total_alerts,
             "total_sites": total_sites,
+            "default_portals": default_portal_count,
             "telegram_sent": telegram_sent,
             "last_sync": last_sync,
             "active_monitors": active_monitors,
             "watchlist_count": watchlist_count,
         }
 
+    def update_user_status(self, alert_id: int, user_status: str) -> Optional[Dict[str, Any]]:
+        if user_status not in VALID_USER_STATUSES:
+            raise ValueError(f"Invalid user_status: {user_status}")
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE notifications SET user_status = ? WHERE id = ?",
+                (user_status, alert_id),
+            )
+            connection.commit()
+            if cursor.rowcount != 1:
+                return None
+
+            row = connection.execute(
+                """
+                SELECT id, exam_name, update_type, old_value, new_value, summary,
+                       source_url, site_name, raw_text, content_hash, created_at,
+                       telegram_sent, user_status, fee, vacancies, last_date
+                FROM notifications WHERE id = ?
+                """,
+                (alert_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        record = self._row_to_record(row)
+        entry = record.to_dict()
+        entry["id"] = row["id"]
+        return entry
+
     def pending_telegram_notifications(self, limit: int = 20) -> List[Dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT id, exam_name, update_type, old_value, new_value, summary,
-                       source_url, site_name, raw_text, content_hash, created_at, telegram_sent
+                       source_url, site_name, raw_text, content_hash, created_at,
+                       telegram_sent, user_status, fee, vacancies, last_date
                 FROM notifications
                 WHERE telegram_sent = 0
                 ORDER BY datetime(created_at) DESC, id DESC

@@ -1,19 +1,20 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Moon, Sun, Plus, Menu, X, Filter, CalendarRange, Trash2,
-  Radio, User, Briefcase, Globe, Settings, TrendingUp,
+  Menu, X, Sun, Moon, ArrowLeft, Filter, CalendarRange, Trash2, Plus,
+  Radio, User, Briefcase, Globe, Settings, TrendingUp, ShieldCheck
 } from 'lucide-react';
-import DashboardStats from '../components/DashboardStats';
+import DashboardStats from '../../../components/DashboardStats';
 import NotificationFeed, {
   CrmStatus,
   NotificationItem,
   RawNotificationItem,
   UserProfile,
   normalizeNotification,
-} from '../components/NotificationFeed';
+} from '../../../components/NotificationFeed';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,10 +27,7 @@ const THEME_KEY = 'govexam-theme-mode';
 const PINNED_KEY = 'govexam-pinned-alerts';
 const WATCHLIST_KEY = 'govexam-watchlist-portals';
 const PROFILE_KEY = 'govsentry_user_profile';
-const DASHBOARD_WINDOW_DAYS = 20;
 const REFRESH_INTERVAL_MS = 45_000;
-
-const AUDIO_CHIME_URL = 'https://www.soundjay.com/buttons/sounds/button-09.mp3';
 
 const DEFAULT_PORTALS = [
   { name: 'SSC', label: 'Staff Selection Commission' },
@@ -39,6 +37,15 @@ const DEFAULT_PORTALS = [
   { name: 'NTA', label: 'National Testing Agency' },
   { name: 'RRB', label: 'Railway Recruitment Board' },
 ];
+
+const PORTALS_MAP: Record<string, string> = {
+  ssc: 'Staff Selection Commission (SSC)',
+  tnpsc: 'Tamil Nadu Public Service Commission (TNPSC)',
+  upsc: 'Union Public Service Commission (UPSC)',
+  ibps: 'Institute of Banking Personnel Selection (IBPS)',
+  nta: 'National Testing Agency (NTA)',
+  rrb: 'Railway Recruitment Board (RRB)',
+};
 
 interface ApiStats {
   total_alerts: number;
@@ -78,17 +85,11 @@ function isValidHttpUrl(value: string): boolean {
   }
 }
 
-function isWithinLastDays(timestampMs: number, days: number): boolean {
+function isWithinLast15Days(timestampMs: number): boolean {
   if (!timestampMs) return false;
   const nowMs = Date.now();
-  return timestampMs >= nowMs - days * 24 * 60 * 60 * 1000 && timestampMs <= nowMs;
-}
-
-function formatRefreshLabel(isoTime: string | null): string {
-  if (!isoTime) return 'Waiting for first refresh';
-  const parsed = Date.parse(isoTime);
-  if (!Number.isFinite(parsed)) return 'Waiting for first refresh';
-  return new Date(parsed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const minAllowed = nowMs - 15 * 24 * 60 * 60 * 1000;
+  return timestampMs >= minAllowed && timestampMs <= nowMs;
 }
 
 function parseApiStats(
@@ -106,14 +107,6 @@ function parseApiStats(
   return { total_alerts, total_sites, telegram_sent, last_sync, active_monitors, watchlist_count };
 }
 
-function playChime() {
-  try {
-    const audio = new Audio(AUDIO_CHIME_URL);
-    audio.volume = 0.4;
-    audio.play().catch(() => {});
-  } catch {}
-}
-
 // ---------------------------------------------------------------------------
 // Drawer Component
 // ---------------------------------------------------------------------------
@@ -121,7 +114,9 @@ function playChime() {
 interface DrawerProps {
   open: boolean;
   onClose: () => void;
+  userProfile: UserProfile;
   watchlist: WatchlistPortal[];
+  activePortal: string;
   onRemoveWatchlist: (p: WatchlistPortal) => void;
   onWatchlistSubmit: (e: FormEvent<HTMLFormElement>) => void;
   websiteName: string;
@@ -131,35 +126,17 @@ interface DrawerProps {
   watchlistMessage: string | null;
   watchlistMessageType: 'success' | 'info' | 'error';
   submittingWatchlist: boolean;
-  showPortfolioOnly: boolean;
-  onTogglePortfolio: () => void;
 }
 
 function Drawer({
-  open, onClose,
-  watchlist, onRemoveWatchlist,
+  open, onClose, userProfile, watchlist, activePortal, onRemoveWatchlist,
   onWatchlistSubmit, websiteName, setWebsiteName, targetUrl, setTargetUrl,
-  watchlistMessage, watchlistMessageType, submittingWatchlist,
-  showPortfolioOnly, onTogglePortfolio,
+  watchlistMessage, watchlistMessageType, submittingWatchlist
 }: DrawerProps) {
-  const [profileExists, setProfileExists] = useState(false);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const existing = localStorage.getItem(PROFILE_KEY);
-      setProfileExists(!!existing);
-    }
-  }, [open]);
-
   if (!open) return null;
 
-  const watchlistMessageClass =
-    watchlistMessageType === 'success' ? 'text-emerald-600 dark:text-emerald-400 font-medium' :
-    watchlistMessageType === 'error'   ? 'text-red-600 dark:text-red-400 font-medium' :
-    'text-[var(--text-secondary)]';
-
   return (
-    <>
+    <div className="relative z-[9999]">
       <div className="drawer-overlay" onClick={onClose} aria-hidden="true" />
       <aside className="drawer-panel" role="dialog" aria-label="Navigation Drawer">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
@@ -178,46 +155,40 @@ function Drawer({
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {/* ── 1. USER PROFILE ── */}
+          {/* User Profile */}
           <div className="drawer-section">
             <div className="flex items-center gap-2 mb-3">
               <User className="h-3.5 w-3.5 text-[var(--accent)]" />
               <p className="drawer-section-title m-0">User Profile</p>
             </div>
             <Link
-              href={profileExists ? "/settings" : "/profile"}
+              href={userProfile.keywords ? "/settings" : "/profile"}
               onClick={onClose}
-              className="portal-btn justify-center font-bold text-center w-full block"
+              className="portal-btn justify-center font-bold"
             >
-              {profileExists ? 'View / Edit Profile' : 'Onboard Profile'}
+              {userProfile.keywords ? 'Edit Profile & Keywords' : 'Create Profile'}
             </Link>
           </div>
 
-          {/* ── 2. MY APPLICATIONS PORTFOLIO ── */}
+          {/* Settings */}
           <div className="drawer-section">
             <div className="flex items-center gap-2 mb-3">
-              <Briefcase className="h-3.5 w-3.5 text-[var(--accent)]" />
-              <p className="drawer-section-title m-0">My Applications Portfolio</p>
+              <Settings className="h-3.5 w-3.5 text-[var(--accent)]" />
+              <p className="drawer-section-title m-0">Control Center</p>
             </div>
-            <button
-              type="button"
-              id="portfolio-filter-btn"
-              onClick={() => { onTogglePortfolio(); onClose(); }}
-              className={`portal-btn ${showPortfolioOnly ? 'portal-btn-active' : ''}`}
-            >
-              <Briefcase className="h-3.5 w-3.5 flex-shrink-0" />
-              {showPortfolioOnly ? '✓ Showing Applied Exams' : 'Show Applied Exams Only'}
-            </button>
+            <Link href="/settings" onClick={onClose} className="portal-btn justify-center">
+              Go to Settings
+            </Link>
           </div>
 
-          {/* ── 3. DEFAULT MONITORING CHANNELS ── */}
+          {/* Default Portals */}
           <div className="drawer-section">
             <div className="flex items-center gap-2 mb-3">
               <Globe className="h-3.5 w-3.5 text-[var(--accent)]" />
               <p className="drawer-section-title m-0">Default Monitoring Channels</p>
             </div>
             <div className="space-y-1.5">
-              <Link href="/" onClick={onClose} className="portal-btn portal-btn-active">
+              <Link href="/" onClick={onClose} className="portal-btn">
                 <TrendingUp className="h-3.5 w-3.5 flex-shrink-0" />
                 All Portals (Today's Feed)
               </Link>
@@ -226,7 +197,7 @@ function Drawer({
                   key={portal.name}
                   href={`/portal/${portal.name.toLowerCase()}`}
                   onClick={onClose}
-                  className="portal-btn"
+                  className={`portal-btn ${activePortal === portal.name.toLowerCase() ? 'portal-btn-active' : ''}`}
                 >
                   <span className="font-mono text-[10px] font-bold opacity-60">{portal.name}</span>
                   {portal.label}
@@ -235,28 +206,25 @@ function Drawer({
             </div>
           </div>
 
-          {/* ── 4. TAILOR WATCHLIST ── */}
+          {/* Tailor Watchlist */}
           <div className="drawer-section">
             <div className="flex items-center gap-2 mb-3">
               <Plus className="h-3.5 w-3.5 text-[var(--accent)]" />
-              <p className="drawer-section-title m-0">Tailor Watchlist</p>
+              <p className="drawer-section-title m-0">Watchlist Addition</p>
             </div>
-
             <form onSubmit={onWatchlistSubmit} className="space-y-2">
               <input
-                id="watchlist-name"
                 type="text"
+                placeholder="Portal name"
                 className="app-input text-sm"
-                placeholder="Portal name (e.g. Kerala PSC)"
                 value={websiteName}
                 onChange={(e) => setWebsiteName(e.target.value)}
                 required
               />
               <input
-                id="watchlist-url"
                 type="url"
+                placeholder="https://"
                 className="app-input text-sm"
-                placeholder="https://keralapsc.gov.in"
                 value={targetUrl}
                 onChange={(e) => setTargetUrl(e.target.value)}
                 required
@@ -269,29 +237,21 @@ function Drawer({
                 Track This URL
               </button>
             </form>
-
             {watchlistMessage && (
-              <p className={`mt-2 text-xs ${watchlistMessageClass}`}>{watchlistMessage}</p>
+              <p className="mt-2 text-xs text-emerald-600 font-medium">{watchlistMessage}</p>
             )}
-
             {watchlist.length > 0 && (
               <ul className="mt-3 space-y-1.5">
-                {watchlist.map((portal) => (
+                {watchlist.map((p) => (
                   <li
-                    key={portal.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface-soft)] px-3 py-2"
+                    key={p.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface-soft)] px-3 py-2 text-xs"
                   >
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-semibold truncate text-[var(--text-primary)] font-body">
-                        {portal.websiteName}
-                      </p>
-                      <p className="text-[10px] text-[var(--text-secondary)] truncate">{portal.targetUrl}</p>
-                    </div>
+                    <span className="font-semibold truncate">{p.websiteName}</span>
                     <button
                       type="button"
-                      onClick={() => onRemoveWatchlist(portal)}
-                      className="flex-shrink-0 rounded p-1 text-[var(--text-secondary)] hover:text-red-500 transition-colors"
-                      aria-label={`Remove ${portal.websiteName}`}
+                      onClick={() => onRemoveWatchlist(p)}
+                      className="text-[var(--text-secondary)] hover:text-red-500 transition-colors"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -300,32 +260,20 @@ function Drawer({
               </ul>
             )}
           </div>
-
-          {/* ── 5. SYSTEM SETTINGS ── */}
-          <div className="drawer-section">
-            <div className="flex items-center gap-2 mb-3">
-              <Settings className="h-3.5 w-3.5 text-[var(--accent)]" />
-              <p className="drawer-section-title m-0">System Settings</p>
-            </div>
-            <Link
-              href="/settings"
-              onClick={onClose}
-              className="portal-btn justify-center font-bold text-center w-full block"
-            >
-              Configure Settings
-            </Link>
-          </div>
         </div>
       </aside>
-    </>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Main Dashboard page component
+// Main Dynamic Portal Page Component
 // ---------------------------------------------------------------------------
 
-export default function HomePage() {
+export default function PortalPage() {
+  const params = useParams();
+  const source = (params.source as string || '').toLowerCase();
+  
   const [themeMode, setThemeMode] = useState<ThemeMode>('light');
   const [hydrated, setHydrated] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -337,23 +285,20 @@ export default function HomePage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
-
-  const [showLast20Days, setShowLast20Days] = useState(false);
-  const [showPortfolioOnly, setShowPortfolioOnly] = useState(false);
 
   const [userProfile, setUserProfile] = useState<UserProfile>({ keywords: '' });
   const [pinnedAlertIds, setPinnedAlertIds] = useState<string[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistPortal[]>([]);
 
+  // Watchlist states
   const [websiteName, setWebsiteName] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null);
   const [watchlistMessageType, setWatchlistMessageType] = useState<'success' | 'info' | 'error'>('info');
   const [submittingWatchlist, setSubmittingWatchlist] = useState(false);
 
-  const isFirstLoad = useRef(true);
-  const knownIdsRef = useRef<Set<string>>(new Set());
+  const agencyCode = source.toUpperCase();
+  const portalName = PORTALS_MAP[source] || `${agencyCode} Exam Portal`;
 
   // Hydrate states
   useEffect(() => {
@@ -367,19 +312,17 @@ export default function HomePage() {
       try {
         const parsed = JSON.parse(storedPins);
         if (Array.isArray(parsed)) setPinnedAlertIds(parsed.filter((e): e is string => typeof e === 'string'));
-      } catch { setPinnedAlertIds([]); }
+      } catch { /* ignore */ }
     }
 
-    // Load onboarding user profile
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
     if (storedProfile) {
       try {
         const parsed = JSON.parse(storedProfile);
-        if (isRecord(parsed)) {
-          const keywordsVal = typeof parsed.keywords === 'string' ? parsed.keywords : '';
-          setUserProfile({ keywords: keywordsVal });
+        if (isRecord(parsed) && typeof parsed.keywords === 'string') {
+          setUserProfile({ keywords: parsed.keywords });
         }
-      } catch {}
+      } catch { /* ignore */ }
     }
 
     const storedWatchlist = window.localStorage.getItem(WATCHLIST_KEY);
@@ -396,13 +339,13 @@ export default function HomePage() {
           }));
           setWatchlist(restored);
         }
-      } catch { setWatchlist([]); }
+      } catch { /* ignore */ }
     }
 
     setHydrated(true);
   }, []);
 
-  // Persists
+  // Theme & Pins persistence
   useEffect(() => {
     if (!hydrated || typeof window === 'undefined') return;
     document.documentElement.classList.toggle('dark', themeMode === 'dark');
@@ -419,77 +362,66 @@ export default function HomePage() {
     window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
   }, [watchlist, hydrated]);
 
-  // Data Fetching
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setInterval> | undefined;
+  // Fetch data
+  const fetchData = useCallback(async () => {
+    try {
+      const updatesResponse = await fetch(`${API_BASE}/api/updates`, { cache: 'no-store' });
+      if (!updatesResponse.ok) throw new Error(`Unable to fetch updates (HTTP ${updatesResponse.status})`);
 
-    const fetchDashboardData = async () => {
+      const updatesPayload: unknown = await updatesResponse.json();
+      const rawArray: unknown[] = isRecord(updatesPayload) && Array.isArray(updatesPayload.updates)
+        ? updatesPayload.updates : [];
+
+      // Wrap each normalizeNotification in try/catch so one bad record never crashes all
+      const normalized: NotificationItem[] = [];
+      rawArray.filter(isRecord).forEach((entry, index) => {
+        try {
+          const item = normalizeNotification(entry as RawNotificationItem, index);
+          if (item) normalized.push(item);
+        } catch {
+          // Silently skip malformed records
+        }
+      });
+
+      // Safe sort with optional chaining
+      normalized.sort((a, b) => (b?.createdAtMs ?? 0) - (a?.createdAtMs ?? 0));
+
+      const fallbackPortalCount = new Set(normalized.map((item) => item?.agencyCode ?? '')).size;
+      let nextStats: ApiStats = {
+        total_alerts: normalized.length,
+        total_sites: fallbackPortalCount,
+        telegram_sent: 0,
+        last_sync: normalized[0]?.createdAt ?? null,
+        active_monitors: fallbackPortalCount,
+        watchlist_count: 0,
+      };
+
       try {
-        const updatesResponse = await fetch(`${API_BASE}/api/updates`, { cache: 'no-store' });
-        if (!updatesResponse.ok) throw new Error(`Unable to fetch updates (HTTP ${updatesResponse.status})`);
-
-        const updatesPayload: unknown = await updatesResponse.json();
-        const updatesArray = isRecord(updatesPayload) && Array.isArray(updatesPayload.updates)
-          ? updatesPayload.updates : [];
-
-        const normalizedUpdates = updatesArray
-          .filter(isRecord)
-          .map((entry, index) => normalizeNotification(entry as RawNotificationItem, index))
-          .sort((a, b) => b.createdAtMs - a.createdAtMs);
-
-        if (!isFirstLoad.current) {
-          const newItems = normalizedUpdates.filter((n) => !knownIdsRef.current.has(n.id));
-          if (newItems.length > 0) {
-            playChime();
+        const statsResponse = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store' });
+        if (statsResponse.ok) {
+          const statsPayload: unknown = await statsResponse.json();
+          if (isRecord(statsPayload)) {
+            nextStats = parseApiStats(statsPayload as Record<string, unknown>, normalized.length, fallbackPortalCount);
           }
         }
+      } catch { /* ignore */ }
 
-        knownIdsRef.current = new Set(normalizedUpdates.map((n) => n.id));
-        isFirstLoad.current = false;
-
-        const fallbackPortalCount = new Set(normalizedUpdates.map((item) => item.agencyCode)).size;
-        let nextStats: ApiStats = {
-          total_alerts: normalizedUpdates.length,
-          total_sites: fallbackPortalCount,
-          telegram_sent: 0,
-          last_sync: normalizedUpdates[0]?.createdAt ?? null,
-          active_monitors: fallbackPortalCount,
-          watchlist_count: 0,
-        };
-
-        try {
-          const statsResponse = await fetch(`${API_BASE}/api/stats`, { cache: 'no-store' });
-          if (statsResponse.ok) {
-            const statsPayload: unknown = await statsResponse.json();
-            if (isRecord(statsPayload)) {
-              nextStats = parseApiStats(statsPayload as Record<string, unknown>, normalizedUpdates.length, fallbackPortalCount);
-              if (!nextStats.last_sync) nextStats.last_sync = normalizedUpdates[0]?.createdAt ?? null;
-            }
-          }
-        } catch {}
-
-        if (!active) return;
-        setNotifications(normalizedUpdates);
-        setStats(nextStats);
-        setLastRefresh(new Date().toISOString());
-        setError(null);
-      } catch (fetchError) {
-        if (!active) return;
-        setError(fetchError instanceof Error ? fetchError.message : 'Unable to load updates.');
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-
-    fetchDashboardData();
-    timer = setInterval(fetchDashboardData, REFRESH_INTERVAL_MS);
-    return () => {
-      active = false;
-      if (timer) clearInterval(timer);
-    };
+      setNotifications(normalized);
+      setStats(nextStats);
+      setError(null);
+    } catch (e) {
+      setNotifications([]);
+      setError('Unable to load portal updates. The backend intelligence server is currently offline or restarting. Please ensure it is running.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // CRM status change handler
   const handleStatusChange = useCallback((id: string, newStatus: CrmStatus) => {
     setNotifications((prev) =>
       prev.map((n) => n.id === id ? { ...n, userStatus: newStatus } : n)
@@ -499,17 +431,12 @@ export default function HomePage() {
   const handlePinToggle = (id: string) =>
     setPinnedAlertIds((c) => c.includes(id) ? c.filter((e) => e !== id) : [id, ...c]);
 
+  // Watchlist submission
   const handleWatchlistSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedName = websiteName.trim();
     const trimmedUrl = targetUrl.trim();
     if (!trimmedName || !trimmedUrl) return;
-
-    if (!isValidHttpUrl(trimmedUrl)) {
-      setWatchlistMessage('Please enter a valid URL.');
-      setWatchlistMessageType('error');
-      return;
-    }
 
     const tempId = `watch-${Date.now()}`;
     const localEntry: WatchlistPortal = {
@@ -530,14 +457,14 @@ export default function HomePage() {
       });
       if (response.ok) {
         setWatchlist((c) => c.map((e) => e.id === tempId ? { ...e, synced: true } : e));
-        setWatchlistMessage('URL is now being monitored.');
+        setWatchlistMessage('Portal tracked successfully.');
         setWatchlistMessageType('success');
       } else {
-        setWatchlistMessage('URL saved locally.');
+        setWatchlistMessage('Portal saved locally.');
         setWatchlistMessageType('info');
       }
     } catch {
-      setWatchlistMessage('Network error. Saved locally.');
+      setWatchlistMessage('Saved locally (network error).');
       setWatchlistMessageType('info');
     } finally {
       setSubmittingWatchlist(false);
@@ -550,39 +477,41 @@ export default function HomePage() {
     if (!Number.isNaN(numericId) && portal.synced) {
       try {
         await fetch(`${API_BASE}/api/watchlist/${numericId}`, { method: 'DELETE' });
-      } catch {}
+      } catch { /* ignore */ }
     }
   };
 
-  // Memos
-  const recentTwentyDayUpdates = useMemo(
-    () => notifications.filter((item) => isWithinLastDays(item.createdAtMs, DASHBOARD_WINDOW_DAYS)),
-    [notifications],
-  );
-
-  const latestAlert = useMemo(() => notifications[0] ?? null, [notifications]);
-
-  const feedBase = useMemo(
-    () => showLast20Days ? recentTwentyDayUpdates : notifications,
-    [showLast20Days, notifications, recentTwentyDayUpdates],
-  );
-
-  const filteredFeed = useMemo(() => {
-    let feed = feedBase;
-    if (showPortfolioOnly) {
-      feed = feed.filter((item) => item.userStatus !== 'Not Applied');
+  // Filter ONLY notifications matching agencyCode AND within last 15 days — with null safety
+  const portalFeedUpdates = useMemo(() => {
+    if (!notifications?.length) return [];
+    try {
+      return notifications.filter((item) => {
+        if (!item) return false;
+        const matchesAgency = (item?.agencyCode ?? '') === agencyCode;
+        const matches15Days = isWithinLast15Days(item?.createdAtMs ?? 0);
+        return matchesAgency && matches15Days;
+      });
+    } catch {
+      return [];
     }
-    return feed;
-  }, [feedBase, showPortfolioOnly]);
+  }, [notifications, agencyCode]);
 
-  const pinnedAlerts = useMemo(
-    () => recentTwentyDayUpdates.filter((item) => pinnedAlertIds.includes(item.id)),
-    [recentTwentyDayUpdates, pinnedAlertIds],
-  );
+  const pinnedPortalUpdates = useMemo(() => {
+    if (!portalFeedUpdates?.length || !pinnedAlertIds?.length) return [];
+    try {
+      return portalFeedUpdates.filter((item) => item?.id && pinnedAlertIds.includes(item.id));
+    } catch {
+      return [];
+    }
+  }, [portalFeedUpdates, pinnedAlertIds]);
 
   const monitoredPortalCount = useMemo(() => {
-    const fromUpdates = new Set(notifications.map((item) => item.agencyCode)).size;
-    return fromUpdates + watchlist.length;
+    try {
+      const fromUpdates = new Set((notifications ?? []).map((item) => item?.agencyCode ?? '')).size;
+      return fromUpdates + (watchlist?.length ?? 0);
+    } catch {
+      return 0;
+    }
   }, [notifications, watchlist]);
 
   return (
@@ -590,7 +519,9 @@ export default function HomePage() {
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
+        userProfile={userProfile}
         watchlist={watchlist}
+        activePortal={source}
         onRemoveWatchlist={handleRemoveWatchlistPortal}
         onWatchlistSubmit={handleWatchlistSubmit}
         websiteName={websiteName}
@@ -600,21 +531,27 @@ export default function HomePage() {
         watchlistMessage={watchlistMessage}
         watchlistMessageType={watchlistMessageType}
         submittingWatchlist={submittingWatchlist}
-        showPortfolioOnly={showPortfolioOnly}
-        onTogglePortfolio={() => setShowPortfolioOnly((v) => !v)}
       />
 
       <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         
-        {/* ================================================================
-            HEADER
-        ================================================================ */}
+        {/* Navigation link back to stream */}
+        <div className="mb-4">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors bg-[var(--surface-soft)] px-3.5 py-2.5 rounded-xl border border-[var(--border)] shadow-sm"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back to Live Stream
+          </Link>
+        </div>
+
+        {/* Portal Header */}
         <header className="surface-card mb-6 p-5 sm:p-6 animate-fade-in">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-start gap-4">
               <button
                 type="button"
-                id="hamburger-btn"
                 onClick={() => setDrawerOpen(true)}
                 className="mt-1 flex-shrink-0 rounded-xl border border-[var(--border)] bg-[var(--surface-soft)] p-2.5 text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] hover:bg-[var(--accent-soft)] transition-all"
                 aria-label="Open navigation drawer"
@@ -623,113 +560,44 @@ export default function HomePage() {
               </button>
 
               <div>
-                <p className="muted-label">Government Exam Intelligence Platform</p>
+                <p className="muted-label">Dynamic Monitoring Portal</p>
                 <h1 className="mt-1.5 text-3xl font-semibold sm:text-4xl leading-tight">
-                  Aspirant GovSentry
+                  {portalName}
                 </h1>
                 <p className="mt-2 text-sm text-[var(--text-secondary)] max-w-2xl leading-relaxed">
-                  We&apos;ve got you covered. No more infinite tabs, no more missing critical updates. Our automated
-                  intelligence tracks, categorizes, and counts down your exam milestones in real-time so you can
-                  focus entirely on your preparation.
+                  Dedicated feed showing live updates and countdowns specifically for {portalName} detected within the last 15 days.
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <span className="live-badge">Live</span>
-              <button
-                type="button"
-                onClick={() => setThemeMode((c) => (c === 'light' ? 'dark' : 'light'))}
-                className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-2.5 text-sm font-semibold transition-all"
-              >
-                {themeMode === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                {themeMode === 'dark' ? 'Light' : 'Dark'}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setThemeMode((c) => (c === 'light' ? 'dark' : 'light'))}
+              className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-2.5 text-sm font-semibold transition-all"
+            >
+              {themeMode === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              {themeMode === 'dark' ? 'Light' : 'Dark'}
+            </button>
           </div>
-
-          {showPortfolioOnly && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/60 bg-amber-100 dark:bg-amber-950/30 px-3 py-1 text-xs font-semibold text-amber-800 dark:text-amber-300">
-                <Briefcase className="h-3 w-3" />
-                Portfolio View
-                <button
-                  type="button"
-                  onClick={() => setShowPortfolioOnly(false)}
-                  className="hover:text-red-500 transition-colors"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            </div>
-          )}
         </header>
 
         {/* Stats Row */}
         <DashboardStats
           totalWebsitesMonitored={Math.max(monitoredPortalCount, stats.active_monitors)}
           totalAlerts={Math.max(notifications.length, stats.total_alerts)}
-          recentAlerts={recentTwentyDayUpdates.length}
-          pinnedAlerts={pinnedAlerts.length}
+          recentAlerts={portalFeedUpdates.length}
+          pinnedAlerts={pinnedPortalUpdates.length}
           lastSyncTime={stats.last_sync}
         />
 
         <div className="mt-6 space-y-6">
           {error && <div className="error-banner">{error}</div>}
 
-          {/* ── LIVE BREAKING NEWS BOX ── */}
-          {latestAlert && !loading && (
-            <div className="breaking-news-box animate-fade-in">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <span className="live-badge">
-                    <Radio className="h-3 w-3" />
-                    Breaking
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest text-[var(--accent)]">
-                    {latestAlert.agencyCode}
-                  </span>
-                  <span className="text-[11px] text-[var(--text-secondary)] italic font-medium ml-2">
-                    Why is this highlighted? This is the most recent critical update detected by our live intelligence trackers.
-                  </span>
-                </div>
-                <p className="text-[11px] text-[var(--text-secondary)]">
-                  {new Date(latestAlert.createdAtMs).toLocaleString(undefined, {
-                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-                  })}
-                </p>
-              </div>
-              <p className="mt-2 text-sm font-semibold text-[var(--text-primary)] leading-snug">
-                🚨 {latestAlert.examTitle}
-              </p>
-              <p className="mt-1 text-xs text-[var(--text-secondary)] line-clamp-2">{latestAlert.summary}</p>
-            </div>
-          )}
-
-          {/* Stream Controls */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-[var(--text-secondary)]">
-              {loading
-                ? 'Loading updates…'
-                : `${filteredFeed.length} update${filteredFeed.length !== 1 ? 's' : ''} · refreshed at ${formatRefreshLabel(lastRefresh)}`}
-            </p>
-            <button
-              id="toggle-20-days"
-              type="button"
-              onClick={() => setShowLast20Days((v) => !v)}
-              className={`btn-toggle ${showLast20Days ? 'btn-toggle-active' : ''}`}
-            >
-              <CalendarRange className="h-3.5 w-3.5" />
-              Last 20 Days
-            </button>
-          </div>
-
-          {/* Pinned Alerts */}
-          {pinnedAlerts.length > 0 && (
+          {pinnedPortalUpdates.length > 0 && (
             <NotificationFeed
-              title="📌 Pinned Workspace"
-              description="Priority updates from the last 20 days saved for quick daily verification."
-              updates={pinnedAlerts}
+              title={`📌 Pinned alerts from ${agencyCode}`}
+              description="Priority updates from this portal saved for verification."
+              updates={pinnedPortalUpdates}
               emptyMessage=""
               pinnedIds={pinnedAlertIds}
               onTogglePin={handlePinToggle}
@@ -739,17 +607,16 @@ export default function HomePage() {
             />
           )}
 
-          {/* Main Feed */}
           <NotificationFeed
-            title={showPortfolioOnly ? "My Applications Portfolio" : "Live Intelligence Stream"}
-            description={showPortfolioOnly ? "Exams where status is not 'Not Applied'." : "Chronological stream from monitored portals."}
-            updates={filteredFeed}
+            title={`Updates from ${agencyCode}`}
+            description={`Showing notifications fetched from ${portalName} in the last 15 days.`}
+            updates={portalFeedUpdates ?? []}
             emptyMessage={
-              loading ? 'Loading live updates…' :
-              showPortfolioOnly ? 'No applied exams yet. Select status on a card to track it here.' :
-              showLast20Days ? 'No updates in the last 20 days.' : 'No updates available yet.'
+              loading
+                ? 'Loading portal updates…'
+                : `No announcements posted by this portal in the last 15 days.`
             }
-            pinnedIds={pinnedAlertIds}
+            pinnedIds={pinnedAlertIds ?? []}
             onTogglePin={handlePinToggle}
             userProfile={userProfile}
             apiBase={API_BASE}

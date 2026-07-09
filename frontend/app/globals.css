@@ -7,18 +7,18 @@
    ============================================================ */
 :root {
   color-scheme: light;
-  --bg: #f4f9f6;
+  --bg: #ecf5f0;
   --surface: #ffffff;
-  --surface-soft: #e6efe9;
-  --border: #d1e2d7;
+  --surface-soft: #dbece2;
+  --border: #c2dfcd;
   --text-primary: #022c22;
   --text-secondary: #115e59;
   --accent: #c2410c;
   --accent-soft: #ffedd5;
   --accent-mid: #fed7aa;
   --ring: #c8d9d2;
-  --shadow: 0 8px 28px rgba(2, 44, 34, 0.05), 0 2px 8px rgba(2, 44, 34, 0.03);
-  --shadow-elevated: 0 16px 48px rgba(2, 44, 34, 0.08), 0 4px 16px rgba(2, 44, 34, 0.05);
+  --shadow: 0 8px 28px rgba(2, 44, 34, 0.04), 0 2px 8px rgba(2, 44, 34, 0.02);
+  --shadow-elevated: 0 16px 48px rgba(2, 44, 34, 0.06), 0 4px 16px rgba(2, 44, 34, 0.03);
   --live-pulse-color: #c2410c;
   --gradient-icon-bg: linear-gradient(135deg, #e6efe9 0%, #cbdcd2 100%);
   --gradient-accent: linear-gradient(135deg, #c2410c 0%, #a2350a 100%);
@@ -140,6 +140,37 @@ body {
 @keyframes shimmer {
   0%   { background-position: -200% center; }
   100% { background-position: 200% center; }
+}
+
+@keyframes slide-in-drawer {
+  from {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slide-out-drawer {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes match-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
 }
 
 /* ============================================================
@@ -553,5 +584,107 @@ body {
 
   .highlight-flash {
     animation: flash-highlight 2.5s ease-out;
+  }
+
+  /* --- Hamburger / Drawer system --- */
+  .drawer-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(3px);
+    animation: fade-in 0.25s ease both;
+  }
+
+  html.dark .drawer-overlay {
+    background: rgba(0, 0, 0, 0.65);
+  }
+
+  .drawer-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    width: min(340px, 90vw);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    box-shadow: var(--shadow-elevated);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: slide-in-drawer 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .drawer-section {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .drawer-section:last-child {
+    border-bottom: none;
+  }
+
+  .drawer-section-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-family: var(--font-body), sans-serif;
+    margin-bottom: 0.875rem;
+  }
+
+  .portal-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 0.625rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: var(--font-body), sans-serif;
+    border: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.18s ease;
+    text-align: left;
+  }
+
+  .portal-btn:hover {
+    border-color: var(--accent-mid);
+    color: var(--text-primary);
+    background: var(--accent-soft);
+  }
+
+  .portal-btn-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  /* --- Live Breaking News box --- */
+  .breaking-news-box {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1rem;
+    border: 1.5px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-soft) 0%, var(--surface) 100%);
+    padding: 1rem 1.25rem;
+  }
+
+  .breaking-news-box::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(194,65,12,0.04) 0%, transparent 60%);
+    pointer-events: none;
+  }
+
+  html.dark .breaking-news-box {
+    border-color: var(--accent);
+    background: linear-gradient(135deg, var(--accent-soft) 0%, var(--surface) 100%);
   }
 }

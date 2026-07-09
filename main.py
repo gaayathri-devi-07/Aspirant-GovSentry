@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from ai_processor import GeminiProcessor
 from database import Database, get_database
 from notifier import TelegramNotifier
-from scraper import GOVERNMENT_SITES, scrape_all_sites
+from scraper import GOVERNMENT_SITES, extract_tldr_metadata, scrape_all_sites
 
 load_dotenv()
 logging.basicConfig(
@@ -71,47 +71,122 @@ class GovernmentExamUpdateAgent:
                 logger.error("[METRIC] Site crawl FAILED: %s (%s)", target.name, target.url)
         
         newly_saved: List[dict] = []
-        
+
         for page_data in site_pages:
             site_name = page_data["site_name"]
             source_url = page_data["source_url"]
             raw_text = page_data["content"]
-            
+            # New: structured announcement list with individual deep links
+            announcements: List[dict] = page_data.get("announcements") or []
+
             logger.info("[INFO] Processing Gemini extraction for %s", site_name)
-            
+
             try:
-                parsed_updates = self.processor.parse_updates(site_name, source_url, raw_text)
-                
-                if not parsed_updates:
-                    logger.info("[INFO] No updates extracted for %s", site_name)
-                    continue
-                
-                logger.info("[INFO] Gemini extracted %d update(s) for %s", len(parsed_updates), site_name)
-                
-                for update in parsed_updates:
-                    payload = update.to_dict()
-                    payload.update(
-                        {
-                            "site_name": site_name,
-                            "source_url": source_url,
-                            "raw_text": raw_text,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                    
-                    inserted = self.database.insert_notification(payload)
-                    
-                    if inserted:
-                        logger.info(
-                            "[INFO] New notification saved: %s | %s | %s",
-                            payload["exam_name"],
-                            payload["update_type"],
-                            payload["summary"][:80],
+                if announcements:
+                    # Pass announcements one-by-one so each gets its own deep link saved
+                    # Build a single content blob from all announcement texts for Gemini
+                    combined_content = raw_text  # Already formatted as "ANNOUNCEMENT: … | LINK: …"
+                    parsed_updates = self.processor.parse_updates(site_name, source_url, combined_content)
+
+                    if not parsed_updates:
+                        logger.info("[INFO] No updates extracted for %s", site_name)
+                        continue
+
+                    logger.info("[INFO] Gemini extracted %d update(s) for %s", len(parsed_updates), site_name)
+
+                    # Build a lookup: announcement text → deep link URL
+                    deep_link_map: dict = {}
+                    for ann in announcements:
+                        ann_text = (ann.get("text") or "").strip().lower()
+                        ann_url = ann.get("url") or ""
+                        if ann_text and ann_url:
+                            deep_link_map[ann_text] = ann_url
+
+                    for update in parsed_updates:
+                        payload = update.to_dict()
+
+                        # Try to match the exam_name or summary back to a deep link
+                        exam_text = (payload.get("exam_name") or "").strip().lower()
+                        summary_text = (payload.get("summary") or "").strip().lower()
+
+                        # Find the best matching announcement link
+                        matched_deep_link = source_url  # default to homepage
+                        for ann_text, ann_url in deep_link_map.items():
+                            # If the announcement text overlaps significantly with exam name or summary
+                            ann_words = set(ann_text.split())
+                            exam_words = set(exam_text.split())
+                            if len(ann_words & exam_words) >= 2:
+                                matched_deep_link = ann_url
+                                break
+                            # Also try a substring match
+                            short_exam = exam_text[:40]
+                            if short_exam and short_exam in ann_text:
+                                matched_deep_link = ann_url
+                                break
+
+                        combined_text = f"{payload.get('summary', '')} {payload.get('raw_text', '')} {payload.get('new_value', '')}"
+                        metadata = extract_tldr_metadata(combined_text)
+                        payload.update(
+                            {
+                                "site_name": site_name,
+                                "source_url": matched_deep_link,
+                                "raw_text": raw_text[:500],  # cap raw_text to avoid bloat
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "user_status": "Not Applied",
+                                "fee": metadata.get("fee") or "",
+                                "vacancies": metadata.get("vacancies") or "",
+                                "last_date": metadata.get("last_date") or "",
+                            }
                         )
-                        newly_saved.append(payload)
-                    else:
-                        logger.debug("[DEBUG] Duplicate notification skipped (idempotent): %s", payload["content_hash"][:16])
-            
+
+                        inserted = self.database.insert_notification(payload)
+
+                        if inserted:
+                            logger.info(
+                                "[INFO] New notification saved: %s | link: %s",
+                                payload["exam_name"],
+                                matched_deep_link,
+                            )
+                            newly_saved.append(payload)
+                        else:
+                            logger.debug("[DEBUG] Duplicate skipped: %s", payload.get("content_hash", "")[:16])
+
+                else:
+                    # Fallback path for custom watchlist sites without structured announcements
+                    parsed_updates = self.processor.parse_updates(site_name, source_url, raw_text)
+
+                    if not parsed_updates:
+                        logger.info("[INFO] No updates extracted for %s", site_name)
+                        continue
+
+                    for update in parsed_updates:
+                        payload = update.to_dict()
+                        combined_text = f"{payload.get('summary', '')} {payload.get('raw_text', '')} {payload.get('new_value', '')}"
+                        metadata = extract_tldr_metadata(combined_text)
+                        payload.update(
+                            {
+                                "site_name": site_name,
+                                "source_url": source_url,
+                                "raw_text": raw_text[:500],
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "user_status": "Not Applied",
+                                "fee": metadata.get("fee") or "",
+                                "vacancies": metadata.get("vacancies") or "",
+                                "last_date": metadata.get("last_date") or "",
+                            }
+                        )
+                        inserted = self.database.insert_notification(payload)
+                        if inserted:
+                            logger.info(
+                                "[INFO] New notification saved: %s | %s | %s",
+                                payload["exam_name"],
+                                payload["update_type"],
+                                payload.get("summary", "")[:80],
+                            )
+                            newly_saved.append(payload)
+                        else:
+                            logger.debug("[DEBUG] Duplicate skipped: %s", payload.get("content_hash", "")[:16])
+
             except Exception as exc:
                 logger.error("[ERROR] Failed to process %s: %s", site_name, exc)
                 continue
