@@ -1,0 +1,557 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   DESIGN TOKENS — Light Mode (Sage Green & Cream Editorial)
+   ============================================================ */
+:root {
+  color-scheme: light;
+  --bg: #f4f9f6;
+  --surface: #ffffff;
+  --surface-soft: #e6efe9;
+  --border: #d1e2d7;
+  --text-primary: #022c22;
+  --text-secondary: #115e59;
+  --accent: #c2410c;
+  --accent-soft: #ffedd5;
+  --accent-mid: #fed7aa;
+  --ring: #c8d9d2;
+  --shadow: 0 8px 28px rgba(2, 44, 34, 0.05), 0 2px 8px rgba(2, 44, 34, 0.03);
+  --shadow-elevated: 0 16px 48px rgba(2, 44, 34, 0.08), 0 4px 16px rgba(2, 44, 34, 0.05);
+  --live-pulse-color: #c2410c;
+  --gradient-icon-bg: linear-gradient(135deg, #e6efe9 0%, #cbdcd2 100%);
+  --gradient-accent: linear-gradient(135deg, #c2410c 0%, #a2350a 100%);
+}
+
+/* ============================================================
+   DESIGN TOKENS — Dark Mode (Deep Forest Dark Theme)
+   ============================================================ */
+html.dark {
+  color-scheme: dark;
+  --bg: #06120e;
+  --surface: #0a1c15;
+  --surface-soft: #0f2b20;
+  --border: #153c2c;
+  --text-primary: #dcf2e6;
+  --text-secondary: #80ba9b;
+  --accent: #f59e0b;
+  --accent-soft: #2c2514;
+  --accent-mid: #483c1d;
+  --ring: #153c2c;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-elevated: 0 16px 48px rgba(0, 0, 0, 0.7), 0 4px 16px rgba(0, 0, 0, 0.4);
+  --live-pulse-color: #f59e0b;
+  --gradient-icon-bg: linear-gradient(135deg, #0a1c15 0%, #0f2b20 100%);
+  --gradient-accent: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+}
+
+/* ============================================================
+   BASE RESETS & SCROLL
+   ============================================================ */
+html,
+body {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-body), 'Space Grotesk', sans-serif;
+  transition:
+    background-color 0.35s ease,
+    color 0.35s ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(143, 168, 155, 0.28);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   SCROLLBAR STYLING
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-soft);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--accent-mid);
+  border-radius: 999px;
+  border: 2px solid var(--surface-soft);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* ============================================================
+   KEYFRAME ANIMATIONS
+   ============================================================ */
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+/* ============================================================
+   TYPOGRAPHY — Serif headings
+   ============================================================ */
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display), 'Playfair Display', serif;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+}
+
+/* ============================================================
+   COMPONENT LAYER
+   ============================================================ */
+@layer components {
+
+  /* --- Cards --- */
+  .surface-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    border-radius: 1rem;
+    transition:
+      background-color 0.35s ease,
+      border-color 0.35s ease,
+      box-shadow 0.25s ease,
+      transform 0.25s ease;
+  }
+
+  .surface-card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-elevated);
+    border-color: var(--accent-mid);
+  }
+
+  /* --- Entrance animation wrappers --- */
+  .animate-fade-in-up {
+    animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease both;
+  }
+
+  .animate-slide-in {
+    animation: slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* Staggered child delay helpers */
+  .stagger-1 { animation-delay: 0.05s; }
+  .stagger-2 { animation-delay: 0.10s; }
+  .stagger-3 { animation-delay: 0.15s; }
+  .stagger-4 { animation-delay: 0.20s; }
+
+  /* --- Live pulse indicator --- */
+  .live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+  }
+
+  .live-badge::before {
+    content: '';
+    display: block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--live-pulse-color);
+    animation: pulse-dot 1.8s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  /* --- Stat display number (serif) --- */
+  .stat-number {
+    font-family: var(--font-display), 'Playfair Display', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+
+  /* --- Gradient icon container for stat cards --- */
+  .gradient-icon-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.625rem;
+    background: var(--gradient-icon-bg);
+    border: 1px solid var(--ring);
+    color: var(--accent);
+    flex-shrink: 0;
+    transition:
+      background 0.35s ease,
+      border-color 0.35s ease;
+  }
+
+  /* --- Form inputs --- */
+  .app-input {
+    width: 100%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-primary);
+    border-radius: 0.75rem;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.9rem;
+    font-family: var(--font-body), sans-serif;
+    outline: none;
+    transition:
+      border-color 0.2s ease,
+      box-shadow 0.2s ease,
+      background-color 0.35s ease,
+      color 0.35s ease;
+  }
+
+  .app-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(143, 168, 155, 0.15);
+  }
+
+  .app-input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
+  }
+
+  /* --- Section label / overline --- */
+  .muted-label {
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 600;
+    font-family: var(--font-body), sans-serif;
+  }
+
+  /* --- Agency / portal pill badge --- */
+  .badge-agency {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ring);
+    background: var(--gradient-icon-bg);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    font-family: var(--font-body), sans-serif;
+    transition: background 0.35s ease, border-color 0.35s ease;
+  }
+
+  /* --- Category chip badges --- */
+  .badge-category {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border-width: 1px;
+    border-style: solid;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-family: var(--font-body), sans-serif;
+  }
+
+  /* --- Horizontal rule divider with gradient fade --- */
+  .editorial-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--border) 20%,
+      var(--border) 80%,
+      transparent
+    );
+    margin: 0;
+  }
+
+  /* --- Nav tab pill --- */
+  .nav-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 0.625rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-family: var(--font-body), sans-serif;
+    transition:
+      background-color 0.2s ease,
+      color 0.2s ease;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+  }
+
+  .nav-tab-active {
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  .nav-tab-inactive {
+    color: var(--text-secondary);
+  }
+
+  .nav-tab-inactive:hover {
+    color: var(--text-primary);
+    background: var(--surface-soft);
+  }
+
+  /* --- Primary action button --- */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: 0.75rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    font-family: var(--font-body), sans-serif;
+    border: 1px solid var(--ring);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition:
+      border-color 0.2s ease,
+      background 0.2s ease,
+      color 0.2s ease,
+      transform 0.15s ease;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--gradient-icon-bg);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* --- Toggle chip button (20-day filter etc.) --- */
+  .btn-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: var(--font-body), sans-serif;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      background 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease;
+  }
+
+  .btn-toggle-active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  .btn-toggle:hover:not(.btn-toggle-active) {
+    border-color: var(--accent-mid);
+    color: var(--text-primary);
+  }
+
+  /* --- Pin button --- */
+  .btn-pin {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 0.625rem;
+    border: 1px solid var(--border);
+    background: transparent;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-family: var(--font-body), sans-serif;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      background 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .btn-pin:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .btn-pin-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  /* --- Empty state box --- */
+  .empty-state {
+    border: 1.5px dashed var(--border);
+    border-radius: 1rem;
+    background: var(--surface-soft);
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+  }
+
+  /* --- Error banner --- */
+  .error-banner {
+    border-radius: 0.875rem;
+    border: 1px solid #c97a6a;
+    background: #f9ede9;
+    padding: 0.875rem 1rem;
+    font-size: 0.875rem;
+    color: #6b2f22;
+    animation: fade-in 0.3s ease;
+  }
+
+  html.dark .error-banner {
+    border-color: #6b3028;
+    background: #2a1510;
+    color: #e8b4a5;
+  }
+
+  /* --- Watchlist synced chip --- */
+  .chip-synced {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--ring);
+    font-family: var(--font-body), sans-serif;
+  }
+
+  .chip-local {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--surface-soft);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    font-family: var(--font-body), sans-serif;
+  }
+
+  /* --- Live Alert Toast System & Highlights --- */
+  @keyframes slide-in-toast {
+    from {
+      transform: translateX(120%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  .animate-slide-in-toast {
+    animation: slide-in-toast 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes flash-highlight {
+    0% {
+      background-color: var(--accent-soft);
+      border-color: var(--accent);
+      box-shadow: 0 0 16px var(--accent-mid);
+    }
+    100% {
+      background-color: var(--surface);
+      border-color: var(--border);
+      box-shadow: var(--shadow);
+    }
+  }
+
+  .highlight-flash {
+    animation: flash-highlight 2.5s ease-out;
+  }
+}
